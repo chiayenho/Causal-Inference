@@ -1,0 +1,272 @@
+---
+title: "Causal Analysis Project- A/B Testing on App’s Booking Page"
+author: "Yu Chun Peng, Chien-Chu Hsu, Chia-Yen Ho, Carol Ng"
+date: "4/7/2022"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+# https://github.com/shanminlin/AB_test_analysis_app
+library(dplyr)
+library(ggplot2)
+library(MatchIt)
+data = read.csv('clean_data_adjusted.csv')
+
+#Take out experiment 3
+data <-data[!(data$experiment_group=="experiment_3"),]
+```
+
+# 1. Problem Statement
+This is a Flyber app that provides an on-demand flying-taxi service in New York City. As a data analytics team, we’re dedicated to optimizing the user experience for the Flyber app to enhance the conversion rate from every step of the user journey. The statistics showed the conversion rate of the app’s booking page was comparatively lower than the competitors. Therefore, the goal of the test was to see how people engage with the app booking page and which variations generated more bookings.
+
+# 2. Data Description
+The dataset used in our A/B testing analysis was event-level data from a multivariate test for the Flyber app. It is from a Github page. There are approximately 80,000 users and 8 variables in the dataset, namely -
+
+1. **User_uuid**: encrypted user id
+2. **Experiment_group**: Control group is denoted as “control” while treatment groups are denoted as “experiment_1”, “experiment_2”
+
+  + Control group users will be navigated to the original version of the app, with the words “Tip    included”, and the button “Book Flight” to further proceed
+
+  + Treatment group users are navigated to two different app versions - 
+      a. With “Tip included”, “Fly Now” to book
+      b. Without “Tip included”, “Book Flight” to book
+
+3. **Event_uuid**: Trip booking event id
+4. **Event_time**: Time when user triggered a trip
+5. **Age**: Four age groups including 18-29, 30-39, 40-49 and 50+
+6. **Session_uuid**: Session id
+7. **User_neighborhood**: Neighborhoods in New York City such as Brooklyn, Manhattan etc
+8. **Event_type**: Last event the user engaged, four steps included “Open app”, “Enter number of riders”, “Search” and “Begin ride”
+
+# 3. Experiment Hypothesis
+
+Three different versions of the app were tested out for the highest conversion probability. The user funnel contains four steps - “Open app”, “Enter number of riders”, “Search”, and “Begin ride”.
+
+Experiment was conducted on the booking page of the app, which is also the last step of the user journal and the most critical customer experience. It’s essential to test and experiment with the funnel to seek improvements that can raise conversion or improve the customer experience. 
+
+We hypothesized that a redesign of the text on the booking button would make it more personal and highlight the benefits of the experience would lead to more conversions. Another hypothesis was that removing the text 'tips included' on that page would simplify the page and make it easier for users to navigate.
+
+We tested 2 different versions of the app against the original and wanted to know which version of the app page would bring a higher conversion probability. We chose conversion probability as it is a metric that can affect the high-level business metric (e.g. revenue) and would likely be affected by the proposed changes. The conversion rate is defined as the number of booked rides divided by the number of users who enter the booking page. In addition, we wanted to focus on the conversion probability between the stage “Open”, and “Search”. This is the early phase that would most likely start engaging our customers. 
+
+**Hypothesis 1: Redesign the text on the booking button would lead to more conversions
+(Control vs experiment 1)**
+
+**Hypothesis 2: Remove the “tip included” text would lead to more conversions
+(Control vs experiment 2)**
+
+# 4. Threats to Causal Inference
+
+**1. Selection bias**
+Research is usually conducted in a subset of the population, either out of necessity or convenience. Selection bias can result when the selected portion of the population differs from the total population in terms of exposure and outcome of interest. There may be a huge threat of selection bias in our case since users could share the same preference or habit of riding.
+
+**2. Omitted variable bias**
+We’re suspecting that the dataset doesn’t include some of the considerable variables. For example, it’s likely the user’s decision would be influenced by their income. Even though we did a randomized experiment and this bias should be controlled, we don’t have enough information to conclude this.
+
+**3. Simultaneity bias**
+In this experiment, the bidirectional effect between the variable and dependent variable is not considered. That is to say, only the booking button design is considered to influence the users’ decisions in the experiment. Therefore, there is no simultaneity bias in this case.
+
+**4. Measurement error**
+The measurement of the experiment can be problematic to some extent since we’re not sure if the users really notice the change in button design and text. It’s possible those users are too used to the original user interface so they didn’t pay attention to the new design. Another possibility is that their friends place the order for them. So, of course, this would affect our experiment given the inaccurate data.
+
+# 5. Data Cleaning
+Before examining causal inference, we began with the preparation of data by data cleaning. 
+```{r}
+data$event_day = as.Date(data$event_time, format = "%m/%d/%y %H:%M")
+data$open = ifelse(data$event_type == 'open', 1, 0)
+data$of_users = ifelse(data$event_type == '#_of_users', 1, 0)
+data$search = ifelse(data$event_type == 'search', 1, 0)
+data$begin_ride = ifelse(data$event_type == 'begin_ride', 1, 0)
+
+#Number of users in each funnel looks like below:
+table(data$event_type) %>% 
+  as.data.frame() %>%
+  arrange(desc(Freq))  %>%
+  setNames(c("Stages", "Number of users")) 
+```
+
+The number of users in each stage is shown in the chart. We wanted to focus on the conversion probability between the stage “Open”, and “Search” as this is the early phase that would most likely start engaging our customers. 
+
+```{r, include=FALSE} 
+# group by unique session id
+df2 = data %>% group_by(session_uuid, experiment_group, age, event_day,
+                        user_neighborhood) %>%
+  summarise(open = sum(open), of_users = sum(of_users), 
+            search = sum(search), begin_ride = sum(begin_ride))
+
+# User neighborhood: Bronx, Brooklyn, Manhattan, Queens, StatenIsland
+df2$Bronx = ifelse(df2$user_neighborhood == 'Bronx', 1, 0)
+df2$Brooklyn = ifelse(df2$user_neighborhood == 'Brooklyn', 1, 0)
+df2$Manhattan = ifelse(df2$user_neighborhood == 'Manhattan', 1, 0)
+df2$Queens = ifelse(df2$user_neighborhood == 'Queens', 1, 0)
+df2$StatenIsland = ifelse(df2$user_neighborhood == 'Staten Island', 1, 0)
+# age
+df2$f18t29 = ifelse(df2$age == '18-29', 1, 0)
+df2$f30t39 = ifelse(df2$age == '30-39', 1, 0)
+df2$f40t49 = ifelse(df2$age == '40-49', 1, 0)
+df2$f50 = ifelse(df2$age == '50+', 1, 0)
+
+table(df2$experiment_group)
+```
+
+# 6. Explore the data with Visualization 
+Next, we proceed to understand the data by conducting EDA to understand the distribution of data. 
+
+### The Distribution of Variables
+We plotted histograms for the number of users in different groups, the distribution of age and the distribution of neighborhood.
+```{r,fig.show = "hold", out.width = "50%"}
+df_experiment_group = table(df2$experiment_group)%>% 
+  as.data.frame()
+
+ggplot(data=df_experiment_group, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  labs(title="Number of users in control/experiment group", x = "Experiment group", y = "Number of users") +
+  ylim(0, 40000) +
+  geom_text(aes(label=Freq), vjust=-1, color="black", size=3.5) +
+  theme_bw()
+
+# age
+df_age = table(df2$age)%>% 
+  as.data.frame()
+
+ggplot(data=df_age, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  labs(title="Number of logs in each age group", x = "Age", y = "Number of users") +
+  ylim(0, 65000) +
+  geom_text(aes(label=Freq), vjust=-1, color="black", size=3.5) +
+  theme_bw()
+
+# neighborhood
+df_neighborhood = table(df2$user_neighborhood)%>% 
+  as.data.frame()%>%
+  arrange(desc(Freq)) 
+
+ggplot(data=df_neighborhood, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  labs(title="Number of users in each area", x = "Area", y = "Number of users") +
+  ylim(0, 90000) +
+  geom_text(aes(label=Freq), vjust=-1, color="black", size=3.5) +
+  theme_bw()
+```
+
+### Comparisons of Different Experiments
+We plotted line charts to compare the users in the 'Open' and 'Search' phases among the control and treatment groups. We also plotted the conversion rate. 
+```{r,fig.show = "hold", out.width = "50%"}
+df1 = data %>% group_by(experiment_group, event_day, event_type) %>% summarise(cnt = n())
+# number of open app by day
+df1_open = df1 %>% filter(event_type == 'open')
+ggplot(data=df1_open, aes(x=event_day, y=cnt, group=experiment_group)) +
+  geom_line(aes(color=experiment_group)) + 
+  labs(title="Numbers of users open the app", x = "Date", y = "Number of users") +
+  theme(plot.title=element_text(size=30)) + 
+  theme_bw()
+
+# Number of search by day
+df1_search = df1 %>% filter(event_type == 'search')
+ggplot(data=df1_search, aes(x=event_day, y=cnt, group=experiment_group)) +
+  labs(title="Numbers of users search in the app", x = "Date", y = "Number of users") +
+  geom_line(aes(color=experiment_group)) + theme_bw()
+
+# Conversion rate(search/open app) by day
+df_conv_rate = df2 %>% group_by(experiment_group, event_day) %>%
+  summarise(open = sum(open), of_users = sum(of_users), 
+            search = sum(search), begin_ride = sum(begin_ride)) %>%
+  mutate(conv_rate = search/open)
+
+ggplot(data=df_conv_rate, aes(x=event_day, y=conv_rate, group=experiment_group)) +
+  geom_line(aes(color=experiment_group)) + 
+  labs(title="Conversion Rate (search/open app)", x = "Date", y = "Conversion Rate") +
+  theme(plot.title=element_text(size=30)) + 
+  theme_bw()
+```
+
+# 7. Randomization check
+The first step is to make sure that users are randomized in the treatment and control groups, on average there is no difference between the three groups on any characteristics other than treatment. That is, the three groups should be similar in all pre-treatment variables in terms of age and neighborhood. We performed t.test on the variables individually against the test variables. First, we performed t.test on the age and neighborhood variables between the control and experiment 1. Then, we performed t.test on the age and neighborhood variables between the control and experiment 2.
+```{r}
+control = df2 %>% filter(experiment_group == 'control')
+experiment1 = df2 %>% filter(experiment_group == 'experiment_1')
+experiment2 = df2 %>% filter(experiment_group == 'experiment_2')
+```
+
+```{r}
+# Check randomization: control vs experiment 1
+# User neighborhood
+t.test(control$Bronx, experiment1$Bronx)
+t.test(control$Brooklyn, experiment1$Brooklyn)
+t.test(control$Manhattan, experiment1$Manhattan)
+t.test(control$Queens, experiment1$Queens)
+t.test(control$StatenIsland, experiment1$StatenIsland)
+
+# Age: f18t29, f30t39, f40t49, f50
+t.test(control$f18t29, experiment1$f18t29)
+t.test(control$f30t39, experiment1$f30t39)
+t.test(control$f40t49, experiment1$f40t49)
+t.test(control$f50, experiment1$f50)
+
+# Check randomization: control vs experiment 2
+# User neighborhood
+t.test(control$Bronx, experiment2$Bronx)
+t.test(control$Brooklyn, experiment2$Brooklyn)
+t.test(control$Manhattan, experiment2$Manhattan)
+t.test(control$Queens, experiment2$Queens)
+t.test(control$StatenIsland, experiment2$StatenIsland)
+
+# Age: f18t29, f30t39, f40t49, f50
+t.test(control$f18t29, experiment2$f18t29)
+t.test(control$f30t39, experiment2$f30t39)
+t.test(control$f40t49, experiment2$f40t49)
+t.test(control$f50, experiment2$f50)
+```
+**Interpretation:** 
+
++ Null hypothesis: There is no difference in the age/neighborhood between the control and experiment 1/2.
+
++ Alternative hypothesis:  There is an difference in the age/neighborhood between the control and experiment 1/2.
+
+If p-value < 0.05, meaning that the null hypothesis qualifies to be rejected, it indicates that the variables between the control and treatment groups are different and are probably not due to chance.
+
+We could see that from the above t-tests, 89% of p-values are greater than 0.05. Thus, we failed to reject the null hypothesis: the age/neighborhood are not different between the control and experiment 1/2. Therefore, the users in the control and treatment groups are randomized.
+
+# 8. Sample size check
+We expected that experiments 1 and 2 will increase the conversion rate by 1%. Therefore, the next statistical test should check whether the available sample size is sufficient reliably to detect the difference between the treatment and control groups. To check the sufficiency of sample size, we used the power_t_test function and specify the arguments required.
+
+```{r}
+mean(df2$search)
+sd(df2$search)
+table(df2$experiment_group)
+power.t.test(n=38194, power=.8, sig.level=0.05, sd=0.4)
+
+```
+**Interpretation:**
+
+From the result of the test, the current sample size is only able to detect a difference of 0.008. Therefore, our experiment appears to be underpowered to detect the effect that management is looking for. Thus, it is recommended to re-run the experiment with a larger sample data set.
+
+# 9. Experiment
+## Hypothesis 1: Redesign the text on the booking button would lead to more conversions (Control vs experiment 1)
+To check whether Experiment 1 group has more conversions than the control group, we used t-test to testify the hypothesis.
+
+```{r}
+t.test(control$search, experiment1$search, conf.level = 0.95)
+```
+**Interpretation:**
+
+From the result, since the p-value is greater than 0.05, we failed to reject the null hypothesis: the conversion is not different between the control and experiment 1. 
+
+## Hypothesis 2: Remove the “tip included” text would lead to more conversions (Control vs experiment 2)
+
+To check whether Experiment 2 group has more conversions than the control group, we used t-test to testify the hypothesis.
+
+```{r}
+t.test(control$search, experiment2$search, conf.level = 0.95)
+```
+**Interpretation:**
+
+From the result, the p-value is also greater than 0.05, we failed to reject the null hypothesis: the conversion is not different between the control and experiment 2. 
+
+# 10. Conclusion 
+Based on the experimental results above, we can draw the following conclusions:
+Neither redesigning the text on the booking button nor removing the "tip included" text would increase the conversion rate between the "Open" and "Search" stages of the user journey. That is, there is no difference between the control and treatment groups. As a result, our team advises the Flyber not to make changes to these two features on their UI. Our team recommends that the company should conduct Usability Testing first, observe user interactions with the booking page, and then find out the root cause for the poor conversion rate of the booking page.
+
+
+# 11. Limitation
+Even though the A/B analysis did not show a promising improvement in conversions, this might be the funnel impact that will take a long term to get into effect, because the KPI requires long time periods and a very large sample to test for reliability. However, digging deeper would also create another problem when we try to speed up the experiment, developers may push visitors to the three experiment UI in a manner that over-resembles that natural flow on the website. As a result, the data will be skewed. Therefore, we should make sure the traffic to the experiment pages followed the same path during and after the A/B analysis.
